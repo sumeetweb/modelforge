@@ -1,0 +1,17 @@
+.git
+.venv
+node_modules
+**/node_modules
+**/dist
+**/cdk.out
+**/__pycache__
+.local
+.env
+.cache
+model-artifacts/versions
+load-tests/results
+**/.pytest_cache
+docs/
+.agents/
+.codex/
+AGENTS.md
