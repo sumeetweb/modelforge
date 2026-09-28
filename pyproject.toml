@@ -1,0 +1,44 @@
+[project]
+name = "modelforge"
+version = "1.0.0"
+description = "Production-style ML inference infrastructure portfolio"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi>=0.119,<1",
+  "uvicorn>=0.34.3,<1",
+  "pydantic>=2.11.7,<3",
+  "scikit-learn==1.7.2",
+  "numpy==2.3.3",
+  "joblib==1.5.2",
+  "prometheus-client==0.22.1",
+  "opentelemetry-sdk>=1.45,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.45,<2",
+  "opentelemetry-instrumentation-fastapi>=0.66b0,<1",
+  "boto3>=1.40,<2",
+  "opentelemetry-api>=1.45.1,<2",
+  "starlette>=1.3.1,<2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3,<10",
+    "pytest-cov==6.3.0",
+    "httpx==0.28.1",
+    "ruff==0.13.2",
+    "locust>=2.43,<3",
+    "pip-audit==2.9.0",
+    "pyyaml>=6.0.3,<7",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["services/model-server"]
+testpaths = ["services/model-server/tests", "tests/integration"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", "node_modules", "cdk.out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
