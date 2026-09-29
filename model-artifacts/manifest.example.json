@@ -1,0 +1,22 @@
+{
+  "version": "v1",
+  "sha256": "596a15b20bbd9d60bb3b06f827697d8d47c94cb19634b389fd558b3d3464800d",
+  "schema_version": "iris-v1",
+  "features": [
+    "sepal_length",
+    "sepal_width",
+    "petal_length",
+    "petal_width"
+  ],
+  "classes": [
+    "setosa",
+    "versicolor",
+    "virginica"
+  ],
+  "sklearn_version": "1.7.2",
+  "created_at": "2026-10-29T16:01:38.500372+00:00",
+  "algorithm": "StandardScaler+LogisticRegression",
+  "accuracy": 0.9111111111111111,
+  "evaluation": "iris-stratified-holdout-seed42-30pct",
+  "state": "candidate"
+}
