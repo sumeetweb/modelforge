@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT"
+case "${1:-}" in
+  unavailable) TEST=test_unavailable ;;
+  slow) TEST=test_slow ;;
+  invalid-artifact) TEST=test_invalid_artifact ;;
+  rejected-candidate) TEST=test_rejected_candidate ;;
+  rollback) TEST=test_canary_rollback ;;
+  errors) TEST=test_inference_errors ;;
+  *) echo 'Usage: scripts/simulate-incident {unavailable|slow|invalid-artifact|rejected-candidate|rollback|errors}' >&2; exit 2 ;;
+esac
+exec .venv/bin/python -m pytest tests/integration/test_platform.py -v -k "$TEST"

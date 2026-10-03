@@ -1,0 +1,77 @@
+name: modelforge
+x-model: &model
+  build:
+    context: .
+    dockerfile: services/model-server/Dockerfile
+  volumes: ["./model-artifacts:/artifacts:ro"]
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+    start_period: 20s
+services:
+  model-stable:
+    <<: *model
+    environment:
+      MODEL_VERSION: ${MODEL_STABLE_VERSION:-v1}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  model-candidate:
+    <<: *model
+    environment:
+      MODEL_VERSION: ${MODEL_CANDIDATE_VERSION:-v2}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  gateway:
+    build:
+      context: .
+      dockerfile: services/model-gateway/Dockerfile
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      HOST: 0.0.0.0
+      STABLE_URL: http://model-stable:8000
+      CANDIDATE_URL: http://model-candidate:8000
+      MODEL_STABLE_VERSION: ${MODEL_STABLE_VERSION:-v1}
+      MODEL_CANDIDATE_VERSION: ${MODEL_CANDIDATE_VERSION:-v2}
+      CANARY_PERCENT: ${CANARY_PERCENT:-20}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-500}
+      UPSTREAM_RETRIES: ${UPSTREAM_RETRIES:-0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    depends_on:
+      model-stable: {condition: service_healthy}
+      model-candidate: {condition: service_healthy}
+    read_only: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts:/etc/prometheus/alerts:ro
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+  grafana:
+    image: grafana/grafana:12.2.0
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.136.0
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes: ["./observability/otel-collector.yml:/etc/otelcol/config.yml:ro"]
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes: ["./observability/tempo.yml:/etc/tempo.yml:ro"]
