@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: ModelForge
+    folder: ModelForge
+    type: file
+    options: {path: /var/lib/grafana/dashboards}

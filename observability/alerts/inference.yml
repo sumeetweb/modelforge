@@ -1,0 +1,38 @@
+groups:
+  - name: modelforge
+    rules:
+      - alert: ModelForgeGatewayErrors
+        expr: sum(rate(gateway_requests_total{status=~"5.."}[2m])) / clamp_min(sum(rate(gateway_requests_total[2m])), 0.001) > 0.05
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: More than 5% of gateway predictions fail
+          runbook: docs/incident-runbooks.md#errors
+      - alert: ModelForgeLatency
+        expr: histogram_quantile(0.95, sum by (le) (rate(gateway_request_seconds_bucket[2m]))) > 0.5
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: Gateway p95 exceeds 500ms
+          runbook: docs/incident-runbooks.md#slow
+      - alert: ModelForgeFallback
+        expr: sum(rate(gateway_fallback_total[2m])) > 0.1
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: Fallback hides upstream degradation; inspect model metrics
+          runbook: docs/incident-runbooks.md#unavailable
+      - alert: ModelForgeModelLoadFailed
+        expr: model_load_failures_total > 0
+        for: 10s
+        labels: {severity: critical}
+        annotations:
+          summary: Artifact failed to load; model cannot serve
+          runbook: docs/incident-runbooks.md#invalid-artifact
+      - alert: ModelForgeTargetDown
+        expr: up{job=~"gateway|models"} == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: A service cannot be scraped
+          runbook: docs/incident-runbooks.md#unavailable
