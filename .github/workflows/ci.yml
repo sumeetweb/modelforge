@@ -1,0 +1,48 @@
+name: Validate, build and prepare deployment
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm}
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.13.6', enable-cache: true}
+      - run: make setup
+      - run: make lint
+      - run: make test
+      - run: scripts/validate-artifact v1 && scripts/validate-artifact v2
+      - name: Verify exported runtime lock
+        run: |
+          uv export --no-header --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
+          diff services/model-server/requirements.txt /tmp/requirements.txt
+      - run: make security
+      - run: make synth
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-templates
+          path: infra/cdk/cdk.out/*.template.json
+      - name: Build and start complete stack
+        run: make up
+      - run: make smoke
+      - name: Validate Prometheus configuration and alerts
+        run: |
+          docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
+          docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool check rules /etc/prometheus/alerts/inference.yml
+      - name: Capture service logs
+        if: always()
+        run: docker compose --env-file model-artifacts/routing.env logs --no-color > compose.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: compose-logs, path: compose.log}
+      - if: always()
+        run: make down

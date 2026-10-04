@@ -1,0 +1,79 @@
+name: Deploy or roll back release configuration
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Protected GitHub environment'
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_tag: {description: 'Existing immutable application commit SHA', required: true, type: string}
+      stable_version: {description: 'Validated stable S3 artifact', required: true, default: v1, type: string}
+      candidate_version: {description: 'Validated candidate S3 artifact', required: true, default: v2, type: string}
+      canary_percent: {description: '0–100; restore previous value for rollback', required: true, default: '20', type: string}
+permissions: {contents: read, id-token: write}
+concurrency:
+  group: aws-release-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deployment configuration before making changes
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_RELEASE_ROLE_ARN: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+        run: |
+          : "${AWS_REGION:?Set the environment AWS_REGION variable}"
+          : "${AWS_RELEASE_ROLE_ARN:?Set the environment AWS_RELEASE_ROLE_ARN variable}"
+          : "${ARTIFACT_BUCKET:?Set the environment ARTIFACT_BUCKET variable}"
+          : "${SMOKE_URL:?Set a gateway URL accessible to the selected deployment runner}"
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm}
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.13.6'}
+      - run: make setup && make lint && make test
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Validate trusted S3 artifacts before deployment
+        env:
+          STABLE: ${{ inputs.stable_version }}
+          CANDIDATE: ${{ inputs.candidate_version }}
+          ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+        run: |
+          for version in "$STABLE" "$CANDIDATE"; do
+            ARTIFACT_ROOT="$RUNNER_TEMP/registry" MODEL_VERSION="$version" PYTHONPATH=services/model-server .venv/bin/python scripts/fetch_artifact.py
+            scripts/validate-artifact "$version" --root "$RUNNER_TEMP/registry"
+          done
+      - name: Apply explicit image and model configuration
+        working-directory: infra/cdk
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          STABLE: ${{ inputs.stable_version }}
+          CANDIDATE: ${{ inputs.candidate_version }}
+          WEIGHT: ${{ inputs.canary_percent }}
+          REPOSITORY: ${{ github.repository }}
+          PUBLIC_ALB: ${{ vars.PUBLIC_ALB }}
+          CERTIFICATE_ARN: ${{ vars.CERTIFICATE_ARN }}
+          ALLOWED_CIDR: ${{ vars.ALLOWED_CIDR }}
+          OIDC_PROVIDER_ARN: ${{ vars.OIDC_PROVIDER_ARN }}
+        run: |
+          npx cdk deploy ModelForgePlatform --require-approval never --outputs-file release-outputs.json \
+            -c "imageTag=$IMAGE_TAG" -c "stableVersion=$STABLE" -c "candidateVersion=$CANDIDATE" -c "canaryPercent=$WEIGHT" \
+            -c "githubRepo=$REPOSITORY" -c "publicAlb=${PUBLIC_ALB:-false}" -c "certificateArn=$CERTIFICATE_ARN" \
+            -c "allowedCidr=$ALLOWED_CIDR" -c "oidcProviderArn=$OIDC_PROVIDER_ARN"
+      - name: Staging or production smoke gate
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}
+        run: |
+          test -n "$SMOKE_URL"
+          .venv/bin/python scripts/smoke.py --url "$SMOKE_URL"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: release-outputs, path: infra/cdk/release-outputs.json}
