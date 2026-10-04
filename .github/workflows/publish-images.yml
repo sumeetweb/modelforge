@@ -1,0 +1,35 @@
+name: Publish application images
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target account selected by protected GitHub environment'
+        type: choice
+        options: [staging, production]
+        default: staging
+permissions: {contents: read, id-token: write}
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22', cache: npm}
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.13.6'}
+      - run: make setup && make lint && make test && make security
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish immutable application images (no model artifacts baked in)
+        env:
+          MODEL_REPOSITORY: ${{ vars.MODEL_REPOSITORY }}
+          GATEWAY_REPOSITORY: ${{ vars.GATEWAY_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx build --platform linux/amd64 -f services/model-server/Dockerfile -t "$MODEL_REPOSITORY:$IMAGE_TAG" --push .
+          docker buildx build --platform linux/amd64 -f services/model-gateway/Dockerfile -t "$GATEWAY_REPOSITORY:$IMAGE_TAG" --push .

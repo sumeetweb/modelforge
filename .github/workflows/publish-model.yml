@@ -1,0 +1,44 @@
+name: Validate and publish model artifact
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target account selected by protected GitHub environment'
+        type: choice
+        options: [staging, production]
+        default: staging
+      version: {description: 'New unique version (never overwrite)', required: true, type: string}
+      regularization: {description: 'Logistic regression C', default: '2', type: string}
+permissions: {contents: read, id-token: write}
+concurrency:
+  group: publish-model
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.13.6'}
+      - run: uv sync --frozen --python 3.12
+      - name: Train tiny demo artifact and validate integrity, schema and accuracy
+        env:
+          VERSION: ${{ inputs.version }}
+          REGULARIZATION: ${{ inputs.regularization }}
+        run: |
+          scripts/register-model "$VERSION" --regularization "$REGULARIZATION"
+          scripts/validate-artifact "$VERSION"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Upload new version using conditional writes
+        env:
+          VERSION: ${{ inputs.version }}
+          ARTIFACT_BUCKET: ${{ vars.ARTIFACT_BUCKET }}
+        run: |
+          aws s3api put-object --bucket "$ARTIFACT_BUCKET" --key "versions/$VERSION/model.joblib" --body "model-artifacts/versions/$VERSION/model.joblib" --if-none-match '*'
+          aws s3api put-object --bucket "$ARTIFACT_BUCKET" --key "versions/$VERSION/manifest.json" --body "model-artifacts/versions/$VERSION/manifest.json" --if-none-match '*'
+      - uses: actions/upload-artifact@v4
+        with: {name: model-manifest, path: 'model-artifacts/versions/*/manifest.json'}
