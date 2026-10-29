@@ -34,7 +34,7 @@ jobs:
           : "${SMOKE_URL:?Set a gateway URL accessible to the selected deployment runner}"
       - uses: actions/setup-node@v4
         with: {node-version: '22', cache: npm}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with: {version: '0.13.6'}
       - run: make setup && make lint && make test
       - uses: aws-actions/configure-aws-credentials@v4
