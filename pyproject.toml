@@ -5,7 +5,7 @@ description = "Production-style ML inference infrastructure portfolio"
 requires-python = ">=3.12,<3.15"
 dependencies = [
   "fastapi>=0.119,<1",
-  "uvicorn>=0.34.3,<1",
+  "uvicorn>=0.54.0,<1",
   "pydantic>=2.11.7,<3",
   "scikit-learn==1.7.2",
   "numpy==2.3.3",
