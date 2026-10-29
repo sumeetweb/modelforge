@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY services/model-gateway/package.json services/model-gateway/package.json
@@ -6,7 +6,7 @@ COPY infra/cdk/package.json infra/cdk/package.json
 RUN npm ci
 COPY services/model-gateway services/model-gateway
 RUN npm run build -w @modelforge/gateway && npm prune --omit=dev --workspace=@modelforge/gateway
-FROM node:22-bookworm-slim
+FROM node:25-bookworm-slim
 ENV NODE_ENV=production HOST=0.0.0.0
 WORKDIR /app
 COPY --from=build /app/node_modules /app/node_modules
