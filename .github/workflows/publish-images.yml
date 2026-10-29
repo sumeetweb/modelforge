@@ -24,7 +24,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
       - uses: aws-actions/amazon-ecr-login@v2
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Publish immutable application images (no model artifacts baked in)
         env:
           MODEL_REPOSITORY: ${{ vars.MODEL_REPOSITORY }}
