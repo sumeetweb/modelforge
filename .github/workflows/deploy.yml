@@ -37,7 +37,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with: {version: '0.13.6'}
       - run: make setup && make lint && make test
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_RELEASE_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
