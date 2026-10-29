@@ -107,7 +107,7 @@ In the Actions tab, run **Publish application images** for the chosen environmen
 
 The workflow validates downloaded model artifacts, applies CDK and runs a smoke gate. The gate fails the workflow on errors; it does not revert an already completed model rollout. Production promotion means redeploying the accepted versions with a higher percentage, after reviewing observed behavior. Record all four release inputs and the preceding release before applying changes. To roll back, rerun with the preceding image SHA, versions, and percentage. ECS's configured deployment circuit breaker can roll back unhealthy task deployments; it does not judge model accuracy or automate statistical canary promotion.
 
-CloudWatch includes application JSON logs, gateway CPU/latency/5xx dashboards, model inference error alarms and healthy-host alarms. Configure alarm notification actions yourself. Prometheus/Tempo/Grafana are supplied for Compose only; there is no claim that the local trace backend is deployed to AWS.
+CloudWatch includes application JSON logs, gateway CPU/latency/5xx dashboards, model inference error alarms and healthy-host alarms. Prometheus runs privately in AWS and supplies the console; cloud traces go to X-Ray. Tempo and Grafana remain local Compose services. Alerts are displayed in the console, with no notification delivery configured.
 
 ## Cost drivers and cleanup
 
@@ -123,3 +123,23 @@ npx cdk destroy ModelForgeFoundation -c githubRepo=sumeetweb/modelforge
 ECR repositories and the S3 bucket use RETAIN, so destroying the foundation does **not** delete images, object versions, or their charges. Delete retained assets manually only after checking backups and intended retention. Review CloudWatch log groups, dashboard and network resources after destruction. Bootstrap resources also remain until separately removed. Never use a blanket account-wide deletion command.
 
 Reference: [AWS CDK Fargate service configuration](https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_ecs.FargateService.html), [GitHub OIDC with AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
+
+
+## Console and cloud telemetry
+
+The gateway image includes the console at `/console/`; no separate frontend hosting, public telemetry endpoint, or user-management service is required. Rebuild and publish the gateway image when changing the frontend.
+
+The platform now also provisions two private Fargate services:
+
+- **Prometheus** scrapes every gateway and model task using Cloud Map DNS discovery. It evaluates the same alert rules used locally. The gateway reads it over port 9090 using a fixed query catalog. History is task-local, limited to two days and 10 GB, and resets when the task is replaced. This is a single-instance development deployment, not a durable monitoring service. Use a durable managed metrics backend before relying on long-term history or monitoring availability.
+- **OpenTelemetry Collector** accepts OTLP HTTP traces on port 4318 from gateway/model security groups and exports them to AWS X-Ray. Its task role permits only X-Ray segment and telemetry writes. Application logs remain in CloudWatch. Alert rules and existing CloudWatch alarms have no notification actions.
+
+CDK builds the Prometheus configuration image as a Docker asset and publishes it through the bootstrap asset repository. **Docker must be running wherever `cdk deploy` runs**, including a private deployment runner. No extra application ECR repository variable is needed. Synthesizing templates does not publish images or create cloud resources.
+
+After deploying, from a machine/runner permitted to reach the ALB:
+
+```bash
+.venv/bin/python scripts/check-observability.py --url "$SMOKE_URL"
+```
+
+Open `$SMOKE_URL/console/`, check that both model targets are ready, and inspect Alerts. Confirm the CloudWatch collector log stream contains no exporter errors and locate a recent inference trace in X-Ray. Private services reach AWS APIs and image registries through the existing NAT gateway. The extra Fargate tasks, X-Ray ingestion and logs incur charges; destroying the platform removes the task-local Prometheus history.
