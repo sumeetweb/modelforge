@@ -27,7 +27,7 @@ jobs:
           diff services/model-server/requirements.txt /tmp/requirements.txt
       - run: make security
       - run: make synth
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deployment-templates
           path: infra/cdk/cdk.out/*.template.json
@@ -41,7 +41,7 @@ jobs:
       - name: Capture service logs
         if: always()
         run: docker compose --env-file model-artifacts/routing.env logs --no-color > compose.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: {name: compose-logs, path: compose.log}
       - if: always()

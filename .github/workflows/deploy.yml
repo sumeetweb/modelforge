@@ -74,6 +74,6 @@ jobs:
         run: |
           test -n "$SMOKE_URL"
           .venv/bin/python scripts/smoke.py --url "$SMOKE_URL"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with: {name: release-outputs, path: infra/cdk/release-outputs.json}

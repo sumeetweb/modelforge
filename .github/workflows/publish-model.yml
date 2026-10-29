@@ -40,5 +40,5 @@ jobs:
         run: |
           aws s3api put-object --bucket "$ARTIFACT_BUCKET" --key "versions/$VERSION/model.joblib" --body "model-artifacts/versions/$VERSION/model.joblib" --if-none-match '*'
           aws s3api put-object --bucket "$ARTIFACT_BUCKET" --key "versions/$VERSION/manifest.json" --body "model-artifacts/versions/$VERSION/manifest.json" --if-none-match '*'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: model-manifest, path: 'model-artifacts/versions/*/manifest.json'}
