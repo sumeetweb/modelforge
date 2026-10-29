@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check deployment configuration before making changes
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
