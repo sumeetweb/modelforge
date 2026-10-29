@@ -8,5 +8,5 @@
     "format": "prettier --write 'services/model-gateway/**/*.ts' 'infra/cdk/**/*.ts'"
   },
   "engines": {"node": ">=22 <25"},
-  "devDependencies": {"@types/node": "^22.18.6", "typescript": "~5.9.2", "vitest": "^4.0.0", "prettier": "^3.6.2"}
+  "devDependencies": {"@types/node": "^22.18.6", "typescript": "~5.9.2", "vitest": "^5.0.5", "prettier": "^3.6.2"}
 }
