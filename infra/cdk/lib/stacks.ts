@@ -6,6 +6,9 @@ import {
   StackProps,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { Platform as ImagePlatform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
@@ -138,6 +141,122 @@ export class Platform extends Stack {
     const gatewaySg = new ec2.SecurityGroup(this, "GatewaySG", { vpc });
     const modelSg = new ec2.SecurityGroup(this, "ModelSG", { vpc });
     modelSg.addIngressRule(gatewaySg, ec2.Port.tcp(8000), "Gateway only");
+    const monitoringSg = new ec2.SecurityGroup(this, "MonitoringSG", { vpc });
+    modelSg.addIngressRule(
+      monitoringSg,
+      ec2.Port.tcp(8000),
+      "Prometheus scrapes",
+    );
+    gatewaySg.addIngressRule(
+      monitoringSg,
+      ec2.Port.tcp(8080),
+      "Prometheus scrapes",
+    );
+    monitoringSg.addIngressRule(
+      gatewaySg,
+      ec2.Port.tcp(9090),
+      "Read-only telemetry queries",
+    );
+    monitoringSg.addIngressRule(
+      gatewaySg,
+      ec2.Port.tcp(4318),
+      "Gateway traces",
+    );
+    monitoringSg.addIngressRule(modelSg, ec2.Port.tcp(4318), "Model traces");
+    const telemetryLogs = new logs.LogGroup(this, "TelemetryLogs", {
+      retention: logs.RetentionDays.ONE_WEEK,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+    const metricsTask = new ecs.FargateTaskDefinition(this, "MetricsTask", {
+      cpu: 256,
+      memoryLimitMiB: 1024,
+    });
+    metricsTask.addVolume({ name: "metrics" });
+    const prometheus = metricsTask.addContainer("prometheus", {
+      image: ecs.ContainerImage.fromAsset(
+        resolve(__dirname, "../../../observability"),
+        { file: "prometheus/Dockerfile", platform: ImagePlatform.LINUX_AMD64 },
+      ),
+      readonlyRootFilesystem: true,
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "prometheus",
+        logGroup: telemetryLogs,
+      }),
+      command: [
+        "--config.file=/etc/prometheus/prometheus.yml",
+        "--storage.tsdb.path=/prometheus",
+        "--storage.tsdb.retention.time=2d",
+        "--storage.tsdb.retention.size=10GB",
+        "--query.max-concurrency=20",
+        "--query.timeout=5s",
+      ],
+      portMappings: [{ containerPort: 9090 }],
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://localhost:9090/-/ready",
+        ],
+        startPeriod: Duration.seconds(60),
+      },
+    });
+    prometheus.addMountPoints({
+      sourceVolume: "metrics",
+      containerPath: "/prometheus",
+      readOnly: false,
+    });
+    new ecs.FargateService(this, "MetricsService", {
+      cluster,
+      taskDefinition: metricsTask,
+      desiredCount: 1,
+      assignPublicIp: false,
+      securityGroups: [monitoringSg],
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      cloudMapOptions: { name: "prometheus" },
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
+      circuitBreaker: { rollback: true },
+    });
+    const collectorTask = new ecs.FargateTaskDefinition(this, "CollectorTask", {
+      cpu: 256,
+      memoryLimitMiB: 512,
+    });
+    collectorTask.addToTaskRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+        resources: ["*"],
+      }),
+    );
+    collectorTask.addContainer("collector", {
+      image: ecs.ContainerImage.fromRegistry(
+        "otel/opentelemetry-collector-contrib:0.136.0",
+      ),
+      readonlyRootFilesystem: true,
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "collector",
+        logGroup: telemetryLogs,
+      }),
+      environment: {
+        AWS_REGION: this.region,
+        COLLECTOR_CONFIG: readFileSync(
+          resolve(__dirname, "../../../observability/otel-aws.yml"),
+          "utf8",
+        ).replace("${env:AWS_REGION}", this.region),
+      },
+      command: ["--config=env:COLLECTOR_CONFIG"],
+      portMappings: [{ containerPort: 4318 }],
+    });
+    new ecs.FargateService(this, "CollectorService", {
+      cluster,
+      minHealthyPercent: 100,
+      maxHealthyPercent: 200,
+      taskDefinition: collectorTask,
+      desiredCount: 1,
+      assignPublicIp: false,
+      securityGroups: [monitoringSg],
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      cloudMapOptions: { name: "otel" },
+      circuitBreaker: { rollback: true },
+    });
     for (const [name, version] of [
       ["stable", stableVersion],
       ["candidate", candidateVersion],
@@ -169,6 +288,7 @@ export class Platform extends Stack {
         }),
         environment: {
           MODEL_VERSION: version,
+          OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel.modelforge.local:4318",
           ARTIFACT_ROOT: "/tmp/artifacts",
           ARTIFACT_BUCKET: props.foundation.artifacts.bucketName,
         },
@@ -253,6 +373,8 @@ export class Platform extends Stack {
         MODEL_STABLE_VERSION: stableVersion,
         MODEL_CANDIDATE_VERSION: candidateVersion,
         CANARY_PERCENT: canary,
+        PROMETHEUS_URL: "http://prometheus.modelforge.local:9090",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel.modelforge.local:4318",
       },
       portMappings: [{ containerPort: 8080 }],
       healthCheck: {
@@ -266,6 +388,7 @@ export class Platform extends Stack {
     });
     const service = new ecs.FargateService(this, "GatewayService", {
       cluster,
+      cloudMapOptions: { name: "gateway" },
       taskDefinition: task,
       desiredCount: 2,
       minHealthyPercent: 100,

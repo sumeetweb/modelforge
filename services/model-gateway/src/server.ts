@@ -6,10 +6,14 @@ import {
   SpanKind,
   SpanStatusCode,
   trace,
+  Span,
+  Context,
 } from "@opentelemetry/api";
 import { Counter, Histogram, Registry } from "prom-client";
 import { Config, Endpoint } from "./config";
 import { chooseEndpoint, CircuitBreaker } from "./routing";
+import { registerObservability } from "./observability";
+import { registerConsole } from "./console";
 
 interface Input {
   instances: number[][];
@@ -102,6 +106,16 @@ export function buildServer(config: Config, logger = true) {
     registers: [registry],
     buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
   });
+  for (const status of [200, 400, 413, 415, 422, 500, 503])
+    requests.labels(String(status)).inc(0);
+  for (const endpoint of config.endpoints) {
+    routing.labels(endpoint.name).inc(0);
+    served.labels(endpoint.name).inc(0);
+    for (const reason of ["timeout", "network", "server", "protocol"])
+      failures.labels(endpoint.name, reason).inc(0);
+  }
+  fallback.labels("stable", "candidate").inc(0);
+  fallback.labels("candidate", "stable").inc(0);
   const breakers = new Map(
     config.endpoints.map((e) => [
       e.name,
@@ -110,16 +124,81 @@ export function buildServer(config: Config, logger = true) {
   );
   const tracer = trace.getTracer("modelforge-gateway");
   let inflight = 0;
-  const starts = new WeakMap<object, () => number>();
-  app.addHook("onRequest", async (req, reply) => {
+  const httpRequests = new Counter({
+    name: "gateway_http_requests_total",
+    help: "All HTTP requests by normalized route",
+    labelNames: ["method", "route", "status"],
+    registers: [registry],
+  });
+  const httpLatency = new Histogram({
+    name: "gateway_http_request_seconds",
+    help: "All HTTP response latency",
+    labelNames: ["method", "route"],
+    registers: [registry],
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  });
+  const active = new WeakMap<
+    object,
+    { start: number; span?: Span; parent: Context }
+  >();
+  app.addHook("onRequest", (req, reply, done) => {
     reply.header("x-request-id", req.id);
-    if (req.url.split("?")[0] === "/v1/predict")
-      starts.set(req, latency.startTimer());
+    const route = req.routeOptions.url ?? "unmatched";
+    const parent = propagation.extract(context.active(), req.headers);
+    const span = ["/health", "/ready", "/metrics"].includes(route)
+      ? undefined
+      : tracer.startSpan(
+          route === "/v1/predict" ? "gateway.predict" : `HTTP ${route}`,
+          {
+            kind: SpanKind.SERVER,
+            attributes: {
+              "http.request.method": req.method,
+              "http.route": route,
+              "request.id": req.id,
+            },
+          },
+          parent,
+        );
+    const scope = span ? trace.setSpan(parent, span) : parent;
+    active.set(req, { start: performance.now(), span, parent: scope });
+    context.with(scope, done);
   });
   app.addHook("onResponse", async (req, reply) => {
-    if (starts.has(req)) {
-      starts.get(req)!();
+    const state = active.get(req);
+    if (!state) return;
+    const duration = (performance.now() - state.start) / 1000;
+    const route = req.routeOptions.url ?? "unmatched";
+    const method = [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+      "HEAD",
+    ].includes(req.method)
+      ? req.method
+      : "OTHER";
+    httpRequests.inc({ method, route, status: String(reply.statusCode) });
+    httpLatency.observe({ method, route }, duration);
+    if (route === "/v1/predict") {
+      latency.observe(duration);
       requests.inc({ status: String(reply.statusCode) });
+    }
+    if (state.span) {
+      state.span.setAttribute("http.response.status_code", reply.statusCode);
+      if (reply.statusCode >= 500)
+        state.span.setStatus({ code: SpanStatusCode.ERROR });
+      app.log.info({
+        event: "request_completed",
+        request_id: req.id,
+        method,
+        route,
+        status: reply.statusCode,
+        duration_ms: Math.round(duration * 100000) / 100,
+        trace_id: state.span.spanContext().traceId,
+      });
+      state.span.end();
     }
   });
   app.setErrorHandler((err, req, reply) => {
@@ -133,9 +212,7 @@ export function buildServer(config: Config, logger = true) {
       error: {
         code: status < 500 ? "invalid_request" : "internal_error",
         message:
-          status < 500
-            ? "Invalid prediction request"
-            : "Request could not be completed",
+          status < 500 ? "Invalid request" : "Request could not be completed",
         request_id: req.id,
       },
     });
@@ -277,99 +354,90 @@ export function buildServer(config: Config, logger = true) {
             },
           });
       inflight++;
-      const parent = propagation.extract(context.active(), req.headers);
+      const state = active.get(req)!;
       try {
-        return await context.with(parent, () =>
-          tracer.startActiveSpan(
-            "gateway.predict",
-            { kind: SpanKind.SERVER },
-            async (span) => {
-              try {
-                const raw = req.headers["x-routing-key"];
-                if (
-                  raw !== undefined &&
-                  (typeof raw !== "string" ||
-                    raw.length > 128 ||
-                    !/^[\x20-\x7e]+$/.test(raw))
-                )
-                  return reply.code(422).send({
-                    error: {
-                      code: "invalid_request",
-                      message: "Routing key must be 1–128 printable characters",
-                      request_id: req.id,
-                    },
+        return await context.with(state.parent, async () => {
+          const span = state.span!;
+          try {
+            const raw = req.headers["x-routing-key"];
+            if (
+              raw !== undefined &&
+              (typeof raw !== "string" ||
+                raw.length > 128 ||
+                !/^[\x20-\x7e]+$/.test(raw))
+            )
+              return reply.code(422).send({
+                error: {
+                  code: "invalid_request",
+                  message: "Routing key must be 1–128 printable characters",
+                  request_id: req.id,
+                },
+              });
+            const primary = chooseEndpoint(config, raw as string | undefined);
+            routing.inc({ target: primary.name });
+            const secondary = config.endpoints.find(
+              (e) => e.name !== primary.name,
+            )!;
+            for (const [index, endpoint] of [primary, secondary].entries()) {
+              const breaker = breakers.get(endpoint.name)!;
+              if (!breaker.acquire()) continue;
+              if (index) {
+                fallback.inc({ from: primary.name, to: endpoint.name });
+                app.log.warn({
+                  event: "fallback",
+                  request_id: req.id,
+                  from: primary.name,
+                  to: endpoint.name,
+                });
+              }
+              for (let attempt = 0; attempt <= config.retries; attempt++) {
+                try {
+                  const result = await call(endpoint, req.body, req.id);
+                  breaker.success();
+                  served.inc({ target: endpoint.name });
+                  app.log.info({
+                    event: "routed",
+                    request_id: req.id,
+                    target: endpoint.name,
+                    version: result.model_version,
+                    fallback: index > 0,
+                    trace_id: span.spanContext().traceId,
                   });
-                const primary = chooseEndpoint(
-                  config,
-                  raw as string | undefined,
-                );
-                routing.inc({ target: primary.name });
-                const secondary = config.endpoints.find(
-                  (e) => e.name !== primary.name,
-                )!;
-                for (const [index, endpoint] of [
-                  primary,
-                  secondary,
-                ].entries()) {
-                  const breaker = breakers.get(endpoint.name)!;
-                  if (!breaker.acquire()) continue;
-                  if (index) {
-                    fallback.inc({ from: primary.name, to: endpoint.name });
-                    app.log.warn({
-                      event: "fallback",
-                      request_id: req.id,
-                      from: primary.name,
-                      to: endpoint.name,
-                    });
-                  }
-                  for (let attempt = 0; attempt <= config.retries; attempt++) {
-                    try {
-                      const result = await call(endpoint, req.body, req.id);
-                      breaker.success();
-                      served.inc({ target: endpoint.name });
-                      app.log.info({
-                        event: "routed",
-                        request_id: req.id,
-                        target: endpoint.name,
-                        version: result.model_version,
-                        fallback: index > 0,
-                        trace_id: span.spanContext().traceId,
-                      });
-                      return reply
-                        .header("x-model-target", endpoint.name)
-                        .header("x-model-fallback", String(index > 0))
-                        .send(result);
-                    } catch (err) {
-                      const reason = (err as UpstreamError).reason;
-                      failures.inc({ target: endpoint.name, reason });
-                      if (attempt === config.retries || reason === "protocol") {
-                        breaker.failure();
-                        break;
-                      }
-                    }
+                  return reply
+                    .header("x-model-target", endpoint.name)
+                    .header("x-model-fallback", String(index > 0))
+                    .send(result);
+                } catch (err) {
+                  const reason = (err as UpstreamError).reason;
+                  failures.inc({ target: endpoint.name, reason });
+                  if (attempt === config.retries || reason === "protocol") {
+                    breaker.failure();
+                    break;
                   }
                 }
-                span.setStatus({ code: SpanStatusCode.ERROR });
-                return reply
-                  .code(503)
-                  .header("retry-after", "1")
-                  .send({
-                    error: {
-                      code: "all_models_unavailable",
-                      message: "No model could serve this request",
-                      request_id: req.id,
-                    },
-                  });
-              } finally {
-                span.end();
               }
-            },
-          ),
-        );
+            }
+            span.setStatus({ code: SpanStatusCode.ERROR });
+            return reply
+              .code(503)
+              .header("retry-after", "1")
+              .send({
+                error: {
+                  code: "all_models_unavailable",
+                  message: "No model could serve this request",
+                  request_id: req.id,
+                },
+              });
+          } finally {
+            // The response hook also covers validation and overload failures.
+          }
+        });
       } finally {
         inflight--;
       }
     },
   );
+  registerObservability(app, config);
+  registerConsole(app);
   return app;
 }

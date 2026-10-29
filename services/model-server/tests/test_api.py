@@ -73,3 +73,24 @@ def test_faults_are_disabled_by_default(registry):
         create_app(Settings(artifact_root=registry, model_version="test-v1", fault_error_rate=1))
     ) as client:
         assert client.post("/v1/predict", json=VALID).status_code == 200
+
+
+def test_all_routes_have_bounded_metrics_and_safe_completion_logs(registry, caplog):
+    import logging
+
+    with TestClient(
+        create_app(Settings(artifact_root=registry, model_version="test-v1"))
+    ) as client:
+        with caplog.at_level(logging.INFO, logger="modelforge"):
+            client.get("/v1/model/info")
+            client.get("/arbitrary-secret-path")
+            client.post("/v1/predict", json={"secret": "never-log-input"})
+        metrics = client.get("/metrics").text
+        assert 'route="/v1/model/info",status="200",version="test-v1"} 1.0' in metrics
+        assert 'route="unmatched",status="404",version="test-v1"} 1.0' in metrics
+        assert 'route="/v1/predict",status="422",version="test-v1"} 1.0' in metrics
+        logs = " ".join(record.message for record in caplog.records if record.name == "modelforge")
+        assert '"event": "request_completed"' in logs
+        assert '"status": 422' in logs
+        assert "never-log-input" not in logs
+        assert "arbitrary-secret-path" not in logs

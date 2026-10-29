@@ -8,4 +8,7 @@ scrape_configs:
       - targets: [gateway:8080]
   - job_name: models
     static_configs:
-      - targets: [model-stable:8000, model-candidate:8000]
+      - targets: [model-stable:8000]
+        labels: {target: stable}
+      - targets: [model-candidate:8000]
+        labels: {target: candidate}

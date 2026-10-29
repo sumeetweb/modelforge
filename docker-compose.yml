@@ -31,6 +31,7 @@ services:
     ports: ["127.0.0.1:8080:8080"]
     environment:
       HOST: 0.0.0.0
+      PROMETHEUS_URL: http://prometheus:9090
       STABLE_URL: http://model-stable:8000
       CANDIDATE_URL: http://model-candidate:8000
       MODEL_STABLE_VERSION: ${MODEL_STABLE_VERSION:-v1}
@@ -55,6 +56,8 @@ services:
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alerts:/etc/prometheus/alerts:ro
+      - ./observability/tests:/etc/prometheus/tests:ro
+      - ./observability/prometheus/aws.yml:/etc/prometheus/aws.yml:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
   grafana:
     image: grafana/grafana:12.2.0

@@ -21,6 +21,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -46,7 +47,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registry=registry,
         buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5),
     )
+    http_requests = Counter(
+        "model_http_requests_total",
+        "All HTTP requests",
+        ["version", "method", "route", "status"],
+        registry=registry,
+    )
+    http_latency = Histogram(
+        "model_http_request_seconds",
+        "HTTP response latency",
+        ["version", "method", "route"],
+        registry=registry,
+    )
     load_failures = Counter("model_load_failures_total", "Failed model loads", registry=registry)
+    for status in (200, 400, 422, 500, 503):
+        requests.labels(settings.model_version, str(status))
+    ready_metric = Gauge(
+        "model_ready", "Model loaded and ready to serve", ["version"], registry=registry
+    )
+    ready_metric.labels(settings.model_version).set(0)
     provider = None
     if os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
         provider = TracerProvider(
@@ -58,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app):
         try:
             await run_in_threadpool(runtime.load)
+            ready_metric.labels(settings.model_version).set(1)
             logger.info(json.dumps({"event": "model_loaded", "version": settings.model_version}))
         except Exception:
             load_failures.inc()
@@ -82,14 +102,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             supplied if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", supplied) else uuid.uuid4().hex
         )
         start = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            trace.get_current_span().set_status(trace.StatusCode.ERROR)
+            response = error(request, 500, "internal_error", "Request could not be completed")
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        method = (
+            request.method
+            if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+            else "OTHER"
+        )
+        elapsed = time.perf_counter() - start
+        http_requests.labels(settings.model_version, method, route, str(response.status_code)).inc()
+        http_latency.labels(settings.model_version, method, route).observe(elapsed)
         response.headers["x-request-id"] = request.state.request_id
         if request.url.path == "/v1/predict":
             requests.labels(settings.model_version, str(response.status_code)).inc()
+        if route not in {"/health", "/ready", "/metrics"}:
             logger.info(
                 json.dumps(
                     {
-                        "event": "prediction",
+                        "event": "request_completed",
+                        "route": route,
+                        "method": method,
                         "request_id": request.state.request_id,
                         "version": settings.model_version,
                         "status": response.status_code,

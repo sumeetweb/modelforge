@@ -1,0 +1,14 @@
+{
+  "name": "@modelforge/console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  }
+}

@@ -4,6 +4,7 @@ export interface Endpoint {
   version: string;
 }
 export interface Config {
+  prometheusUrl?: string;
   port: number;
   host: string;
   endpoints: [Endpoint, Endpoint];
@@ -50,7 +51,21 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error("Invalid model version");
     return { name, url: url.origin, version: selectedVersion };
   }
+  const prometheus = env.PROMETHEUS_URL
+    ? new URL(env.PROMETHEUS_URL)
+    : undefined;
+  if (
+    prometheus &&
+    (!["http:", "https:"].includes(prometheus.protocol) ||
+      prometheus.username ||
+      prometheus.password ||
+      prometheus.pathname !== "/" ||
+      prometheus.search ||
+      prometheus.hash)
+  )
+    throw new Error("PROMETHEUS_URL must be an HTTP origin");
   return {
+    prometheusUrl: prometheus?.origin,
     port: integer(env, "PORT", 8080, 1, 65535),
     host: env.HOST ?? "127.0.0.1",
     endpoints: [

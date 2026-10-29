@@ -34,10 +34,14 @@ jobs:
       - name: Build and start complete stack
         run: make up
       - run: make smoke
+      - run: .venv/bin/python scripts/check-observability.py
+      - run: .venv/bin/python scripts/check-compose.py
       - name: Validate Prometheus configuration and alerts
         run: |
           docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
           docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool check rules /etc/prometheus/alerts/inference.yml
+          docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool check config /etc/prometheus/aws.yml
+          docker compose --env-file model-artifacts/routing.env exec -T prometheus promtool test rules /etc/prometheus/tests/alerts.test.yml
       - name: Capture service logs
         if: always()
         run: docker compose --env-file model-artifacts/routing.env logs --no-color > compose.log

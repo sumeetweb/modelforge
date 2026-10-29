@@ -17,7 +17,7 @@ describe("AWS deployment safety", () => {
     f.hasResourceProperties("AWS::S3::Bucket", {
       VersioningConfiguration: { Status: "Enabled" },
     });
-    p.resourceCountIs("AWS::ECS::Service", 3);
+    p.resourceCountIs("AWS::ECS::Service", 5);
     p.hasResourceProperties("AWS::ECS::Service", {
       NetworkConfiguration: {
         AwsvpcConfiguration: { AssignPublicIp: "DISABLED" },
@@ -35,6 +35,50 @@ describe("AWS deployment safety", () => {
     for (const definition of Object.values(definitions))
       for (const container of definition.Properties.ContainerDefinitions)
         expect(container.ReadonlyRootFilesystem).toBe(true);
+  });
+  it("wires private metrics and X-Ray without notification destinations", () => {
+    const app = new App();
+    const foundation = new Foundation(app, "Foundation");
+    const platform = new Platform(app, "Platform", { foundation });
+    const template = Template.fromStack(platform);
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Name: "gateway",
+          Environment: Match.arrayWith([
+            {
+              Name: "PROMETHEUS_URL",
+              Value: "http://prometheus.modelforge.local:9090",
+            },
+            {
+              Name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+              Value: "http://otel.modelforge.local:4318",
+            },
+          ]),
+        }),
+      ]),
+    });
+    template.hasResourceProperties("AWS::ServiceDiscovery::Service", {
+      Name: "gateway",
+    });
+    template.hasResourceProperties("AWS::ServiceDiscovery::Service", {
+      Name: "prometheus",
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: {
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: ["xray:PutTraceSegments", "xray:PutTelemetryRecords"],
+            Resource: "*",
+          }),
+        ]),
+      },
+    });
+    template.resourceCountIs("AWS::SNS::Topic", 0);
+    for (const alarm of Object.values(
+      template.findResources("AWS::CloudWatch::Alarm"),
+    ))
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
   });
   it("rejects publicly accessible ALB without TLS and ingress restrictions", () => {
     const app = new App({ context: { publicAlb: "true" } });

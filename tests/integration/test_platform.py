@@ -300,6 +300,26 @@ def test_distributed_trace_continuity(artifacts):
             gateway(artifacts, stable, candidate, OTEL_EXPORTER_OTLP_ENDPOINT=endpoint) as url,
         ):
             assert predict(url).status_code == 200
+            assert (
+                httpx.post(
+                    f"{url}/v1/predict", json={}, headers={"x-request-id": "invalid-trace"}
+                ).status_code
+                == 422
+            )
+            assert httpx.get(f"{url}/v1/routing").status_code == 200
+        invalid_span = next(
+            span
+            for span in spans
+            if any(
+                a.key == "request.id" and a.value.string_value == "invalid-trace"
+                for a in span.attributes
+            )
+        )
+        assert any(
+            a.key == "http.response.status_code" and a.value.int_value == 422
+            for a in invalid_span.attributes
+        )
+        assert any(span.name == "HTTP /v1/routing" for span in spans)
         gateway_span = next(span for span in spans if span.name == "gateway.predict")
         client_span = next(span for span in spans if span.name == "model.request")
         model_span = next(span for span in spans if span.name == "POST /v1/predict")
