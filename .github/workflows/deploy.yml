@@ -32,7 +32,7 @@ jobs:
           : "${AWS_RELEASE_ROLE_ARN:?Set the environment AWS_RELEASE_ROLE_ARN variable}"
           : "${ARTIFACT_BUCKET:?Set the environment ARTIFACT_BUCKET variable}"
           : "${SMOKE_URL:?Set a gateway URL accessible to the selected deployment runner}"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with: {node-version: '22', cache: npm}
       - uses: astral-sh/setup-uv@v6
         with: {version: '0.13.6'}
